@@ -1,0 +1,733 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Creates a Windows DC + Client VM and connects the WOA File Share to both servers. ",
+    "author": "Damione Moore, Ryan McCallum",
+    "alias": "DAMIONEMOORE",
+    "deploymentLinkInternal": "https://labboxprod.azurewebsites.net/api/Labbox?url=https://supportability.visualstudio.com/AzureIaaSVM/_git/Labbox?path=/SME/WOA/winDS.json"
+  },
+  "parameters": {
+    "adminUsername": {
+      "type": "String",
+      "maxLength": 20,
+      "defaultValue": "WOAAdmin",
+      "metadata": {
+        "description": "Username for the Virtual Machine."
+      }
+    },
+    "yourHomeIP": {
+      "type": "string",
+      "defaultValue": "*",
+      "metadata": {
+        "description": "Specify your IP to allow connectivity to the VM from the NSG. Do a quick search for 'my ip' and enter your IP here. This will be placed in your NSG to allow access to the labs. If left as the default value '*', the NSG will use * for the IP address. This is not recommended as CSS policy will automatically remove this rule within a few minutes for security purposes and your LabBox will then require JIT or a new rule with your IP address specified."
+      }
+    },
+    "adminPassword": {
+      "type": "SecureString",
+      "minLength": 12,
+      "defaultValue": "P@ssword123!",
+      "metadata": {
+        "description": "Password for the Virtual Machine."
+      }
+    },
+    "domainName": {
+      "type": "string",
+      "metadata": {
+        "description": "The FQDN of the new AD domain."
+      },
+      "defaultValue": "corp.contoso.com"
+    },
+    "domainAccountUsername": {
+      "type": "string",
+      "defaultValue": "User1",
+      "metadata": {
+        "description": "The name of a domain user to create, i.e. globaluser."
+      }
+    },
+    "domainAccountPassword": {
+      "type": "securestring",
+      "defaultValue": "[parameters('adminPassword')]",
+      "metadata": {
+        "description": "The domain user account password. Uses the same password as the admin account if not specified."
+      }
+    },
+    "location": {
+      "defaultValue": "[resourceGroup().location]",
+      "type": "String",
+      "metadata": {
+        "description": "Location for all resources."
+      }
+    },
+    "vmSize": {
+      "defaultValue": "Standard_D4s_v3",
+      "type": "String",
+      "metadata": {
+        "description": "Default VM Size"
+      }
+    },
+    "storageUri": {
+      "defaultValue": "[format('store{0}', uniqueString(resourceGroup().id))]",
+      "type": "string",
+      "metadata": {
+        "description": "Name of storage account For Boot Diagnostics"
+      }
+    },
+    "storageAccountType": {
+      "type": "string",
+      "defaultValue": "Standard_LRS",
+      "metadata": {
+        "description": "Storage Account type"
+      }
+    }
+  },
+  "variables": {
+    "nicName": "myVMNic",
+    "addressPrefix": "10.0.0.0/16",
+    "subnetName": "Subnet",
+    "subnetPrefix": "10.0.0.0/24",
+    "subnetRef": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('virtualNetworkName'), variables('subnetName'))]",
+    "domainVM": "DC1",
+    "clientVM": "CB",
+	"clientVM1": "GWWA",
+	"clientVM2": "SH",
+    "virtualNetworkName": "MyVNET",
+    "publicIPAddressName": "myPublicIP",
+    "networkSecurityGroupName": "default-NSG",
+    "adNicIP": "10.0.0.10",
+    "clientNicIP": "10.0.0.11",
+	"clientNicIP1": "10.0.0.12",
+	"clientNicIP2": "10.0.0.13",
+    "resourceTagsLabbox": {
+      "DeployedBy": "Labbox",
+      "SessionID": "2f59f679-6168-4336-8610-c5648c0df1ee"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2020-08-01",
+      "name": "[variables('publicIPAddressName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "publicIPAllocationMethod": "Dynamic"
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2020-08-01",
+      "name": "[concat(variables('publicIPAddressName'), '2')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "publicIPAllocationMethod": "Dynamic"
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+	{
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2020-08-01",
+      "name": "[concat(variables('publicIPAddressName'), '3')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "publicIPAllocationMethod": "Dynamic"
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+	{
+      "type": "Microsoft.Network/publicIPAddresses",
+      "apiVersion": "2020-08-01",
+      "name": "[concat(variables('publicIPAddressName'), '4')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "publicIPAllocationMethod": "Dynamic"
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2020-08-01",
+      "name": "[variables('networkSecurityGroupName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "default-allow-3389",
+            "properties": {
+              "priority": 1000,
+              "access": "Allow",
+              "direction": "Inbound",
+              "destinationPortRange": "3389",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "[parameters('yourHomeIP')]",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*"
+            }
+          },
+          {
+            "name": "default-allow-22",
+            "properties": {
+              "priority": 1001,
+              "access": "Allow",
+              "direction": "Inbound",
+              "destinationPortRange": "22",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "[parameters('yourHomeIP')]",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*"
+            }
+          }
+        ]
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2020-08-01",
+      "name": "[variables('virtualNetworkName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName'))]"
+      ],
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[variables('addressPrefix')]"
+          ]
+        },
+        "dhcpOptions": {
+          "dnsServers": [
+            "[variables('adNicIP')]"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "[variables('subnetPrefix')]",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName'))]"
+              }
+            }
+          }
+        ]
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2020-08-01",
+      "name": "[variables('nicName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[variables('publicIPAddressName')]",
+        "[variables('virtualNetworkName')]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('adNicIP')]",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses',variables('publicIPAddressName'))]"
+              },
+              "subnet": {
+                "id": "[variables('subnetRef')]"
+              }
+            }
+          }
+        ],
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName'))]"
+        }
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2020-08-01",
+      "name": "[concat(variables('nicName'), '2')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('publicIPAddressName'), '2'))]",
+        "[variables('virtualNetworkName')]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('clientNicIP')]",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses',concat(variables('publicIPAddressName'), '2'))]"
+              },
+              "subnet": {
+                "id": "[variables('subnetRef')]"
+              }
+            }
+          }
+        ],
+        "dnsSettings": {
+          "dnsServers": [
+            "[variables('adNicIP')]"
+          ]
+        },
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName'))]"
+        }
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+	{
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2020-08-01",
+      "name": "[concat(variables('nicName'), '3')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('publicIPAddressName'), '3'))]",
+        "[variables('virtualNetworkName')]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('clientNicIP1')]",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses',concat(variables('publicIPAddressName'), '3'))]"
+              },
+              "subnet": {
+                "id": "[variables('subnetRef')]"
+              }
+            }
+          }
+        ],
+        "dnsSettings": {
+          "dnsServers": [
+            "[variables('adNicIP')]"
+          ]
+        },
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName'))]"
+        }
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+		{
+      "type": "Microsoft.Network/networkInterfaces",
+      "apiVersion": "2020-08-01",
+      "name": "[concat(variables('nicName'), '4')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/publicIPAddresses', concat(variables('publicIPAddressName'), '4'))]",
+        "[variables('virtualNetworkName')]"
+      ],
+      "properties": {
+        "ipConfigurations": [
+          {
+            "name": "ipconfig1",
+            "properties": {
+              "privateIPAllocationMethod": "Static",
+              "privateIPAddress": "[variables('clientNicIP2')]",
+              "publicIPAddress": {
+                "id": "[resourceId('Microsoft.Network/publicIPAddresses',concat(variables('publicIPAddressName'), '4'))]"
+              },
+              "subnet": {
+                "id": "[variables('subnetRef')]"
+              }
+            }
+          }
+        ],
+        "dnsSettings": {
+          "dnsServers": [
+            "[variables('adNicIP')]"
+          ]
+        },
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName'))]"
+        }
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2021-06-01",
+      "name": "[parameters('storageUri')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "[parameters('storageAccountType')]"
+      },
+      "kind": "StorageV2",
+      "properties": {},
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2020-12-01",
+      "name": "[variables('domainVM')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[variables('nicName')]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSize')]"
+        },
+        "osProfile": {
+          "computerName": "[variables('domainVM')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "MicrosoftWindowsServer",
+            "offer": "WindowsServer",
+            "sku": "2022-Datacenter",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "StandardSSD_LRS"
+            }
+          },
+          "dataDisks": [
+            {
+              "createOption": "Empty",
+              "diskSizeGB": 20,
+              "lun": 0
+            }
+          ]
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',variables('nicName'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true,
+            "storageUri": "[concat('https://', parameters('storageUri'), '.blob.core.windows.net')]"
+          }
+        }
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2020-12-01",
+      "name": "[variables('clientVM')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('nicName'), '2'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSize')]"
+        },
+        "osProfile": {
+          "computerName": "[variables('clientVM')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "MicrosoftWindowsServer",
+            "offer": "WindowsServer",
+            "sku": "2016-Datacenter",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "StandardSSD_LRS"
+            }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',concat(variables('nicName'), '2'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true,
+            "storageUri": "[concat('https://', parameters('storageUri'), '.blob.core.windows.net')]"
+          }
+        }
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+	    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2020-12-01",
+      "name": "[variables('clientVM1')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('nicName'), '3'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSize')]"
+        },
+        "osProfile": {
+          "computerName": "[variables('clientVM1')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "MicrosoftWindowsServer",
+            "offer": "WindowsServer",
+            "sku": "2016-Datacenter",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "StandardSSD_LRS"
+            }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',concat(variables('nicName'), '3'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true,
+            "storageUri": "[concat('https://', parameters('storageUri'), '.blob.core.windows.net')]"
+          }
+        }
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+	    {
+      "type": "Microsoft.Compute/virtualMachines",
+      "apiVersion": "2020-12-01",
+      "name": "[variables('clientVM2')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkInterfaces', concat(variables('nicName'), '4'))]"
+      ],
+      "properties": {
+        "hardwareProfile": {
+          "vmSize": "[parameters('vmSize')]"
+        },
+        "osProfile": {
+          "computerName": "[variables('clientVM2')]",
+          "adminUsername": "[parameters('adminUsername')]",
+          "adminPassword": "[parameters('adminPassword')]"
+        },
+        "storageProfile": {
+          "imageReference": {
+            "publisher": "MicrosoftWindowsServer",
+            "offer": "WindowsServer",
+            "sku": "2016-Datacenter",
+            "version": "latest"
+          },
+          "osDisk": {
+            "createOption": "FromImage",
+            "managedDisk": {
+              "storageAccountType": "StandardSSD_LRS"
+            }
+          }
+        },
+        "networkProfile": {
+          "networkInterfaces": [
+            {
+              "id": "[resourceId('Microsoft.Network/networkInterfaces',concat(variables('nicName'), '4'))]"
+            }
+          ]
+        },
+        "diagnosticsProfile": {
+          "bootDiagnostics": {
+            "enabled": true,
+            "storageUri": "[concat('https://', parameters('storageUri'), '.blob.core.windows.net')]"
+          }
+        }
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/runCommands",
+      "apiVersion": "2021-11-01",
+      "name": "[concat(variables('domainVM'),'/promote')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('domainVM'))]"
+      ],
+      "properties": {
+        "protectedParameters": [
+          {
+            "name": "domainAdmin",
+            "value": "[parameters('adminUsername')]"
+          },
+          {
+            "name": "pw",
+            "value": "[parameters('adminPassword')]"
+          },
+          {
+            "name": "domain",
+            "value": "[parameters('domainName')]"
+          }
+        ],
+        "source": {
+          "script": "[concat('param([string] [Parameter(Mandatory=$true)] $domainAdmin, [string] [Parameter(Mandatory=$true)] $domain, [string] [Parameter(Mandatory=$true)] $pw); $debugpreference=''continue''; $disk = Get-Disk | Where-Object partitionstyle -EQ \"raw\" | Sort-Object number; $label = \"data1\"; $driveLetter = \"F\"; $disk | Initialize-Disk -PartitionStyle MBR -PassThru | New-Partition -UseMaximumSize -DriveLetter $driveLetter |Format-Volume -FileSystem NTFS -NewFileSystemLabel $label -Confirm:$false -Force; Add-WindowsFeature AD-Domain-Services, RSAT-AD-AdminCenter, RSAT-ADDS-Tools, RSAT-DNS-Server -IncludeAllSubFeature -IncludeManagementTools -Restart:$false -verbose; Install-ADDSForest -DomainName $domain -InstallDNS -SafeModeAdministratorPassword (ConvertTo-SecureString -AsPlainText $pw -Force) -Force -NoRebootOnCompletion:$true -DatabasePath \"$($driveLetter):\\NTDS\" -LogPath \"$($driveLetter):\\NTDS\" -SysvolPath \"$($driveLetter):\\Sysvol\" -DomainMode Win2012R2 -ForestMode Win2012R2 -confirm:$false -verbose; Restart-Computer -force;')]"
+        },
+        "timeoutInSeconds": 30000
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/runCommands",
+      "apiVersion": "2021-11-01",
+      "name": "[concat(variables('clientVM'),'/addToDomain')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('clientVM'))]",
+        "[resourceId('Microsoft.Compute/virtualMachines/runCommands', variables('domainVM'), 'promote')]"
+      ],
+      "properties": {
+        "protectedParameters": [
+          {
+            "name": "domainAdmin",
+            "value": "[parameters('adminUsername')]"
+          },
+          {
+            "name": "pw",
+            "value": "[parameters('adminPassword')]"
+          },
+          {
+            "name": "domain",
+            "value": "[parameters('domainName')]"
+          }
+        ],
+        "source": {
+          "script": "[concat('param([string] [Parameter(Mandatory=$true)] $domainAdmin, [string] [Parameter(Mandatory=$true)] $domain, [string] [Parameter(Mandatory=$true)] $pw); $debugpreference=''continue''; $securePass = ConvertTo-SecureString $pw -AsPlainText -Force; $cred = New-Object System.Management.Automation.PSCredential (\"$domain\\$domainAdmin\", $securePass); $isFailing = $true; while($isFailing){ Add-Computer -DomainName $domain -Credential $cred -Force -PassThru -Verbose; $isFailing = !$?; } Restart-Computer -force;')]"
+        },
+        "timeoutInSeconds": 30000
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+	{
+      "type": "Microsoft.Compute/virtualMachines/runCommands",
+      "apiVersion": "2021-11-01",
+      "name": "[concat(variables('clientVM1'),'/addToDomain')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('clientVM1'))]",
+        "[resourceId('Microsoft.Compute/virtualMachines/runCommands', variables('domainVM'), 'promote')]"
+      ],
+      "properties": {
+        "protectedParameters": [
+          {
+            "name": "domainAdmin",
+            "value": "[parameters('adminUsername')]"
+          },
+          {
+            "name": "pw",
+            "value": "[parameters('adminPassword')]"
+          },
+          {
+            "name": "domain",
+            "value": "[parameters('domainName')]"
+          }
+        ],
+        "source": {
+          "script": "[concat('param([string] [Parameter(Mandatory=$true)] $domainAdmin, [string] [Parameter(Mandatory=$true)] $domain, [string] [Parameter(Mandatory=$true)] $pw); $debugpreference=''continue''; $securePass = ConvertTo-SecureString $pw -AsPlainText -Force; $cred = New-Object System.Management.Automation.PSCredential (\"$domain\\$domainAdmin\", $securePass); $isFailing = $true; while($isFailing){ Add-Computer -DomainName $domain -Credential $cred -Force -PassThru -Verbose; $isFailing = !$?; } Restart-Computer -force;')]"
+        },
+        "timeoutInSeconds": 30000
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+	{
+      "type": "Microsoft.Compute/virtualMachines/runCommands",
+      "apiVersion": "2021-11-01",
+      "name": "[concat(variables('clientVM2'),'/addToDomain')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('clientVM2'))]",
+        "[resourceId('Microsoft.Compute/virtualMachines/runCommands', variables('domainVM'), 'promote')]"
+      ],
+      "properties": {
+        "protectedParameters": [
+          {
+            "name": "domainAdmin",
+            "value": "[parameters('adminUsername')]"
+          },
+          {
+            "name": "pw",
+            "value": "[parameters('adminPassword')]"
+          },
+          {
+            "name": "domain",
+            "value": "[parameters('domainName')]"
+          }
+        ],
+        "source": {
+          "script": "[concat('param([string] [Parameter(Mandatory=$true)] $domainAdmin, [string] [Parameter(Mandatory=$true)] $domain, [string] [Parameter(Mandatory=$true)] $pw); $debugpreference=''continue''; $securePass = ConvertTo-SecureString $pw -AsPlainText -Force; $cred = New-Object System.Management.Automation.PSCredential (\"$domain\\$domainAdmin\", $securePass); $isFailing = $true; while($isFailing){ Add-Computer -DomainName $domain -Credential $cred -Force -PassThru -Verbose; $isFailing = !$?; } Restart-Computer -force;')]"
+        },
+        "timeoutInSeconds": 30000
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Compute/virtualMachines/runCommands",
+      "apiVersion": "2021-11-01",
+      "name": "[concat(variables('domainVM'),'/addDomainUser')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Compute/virtualMachines', variables('domainVM'))]",
+        "[resourceId('Microsoft.Compute/virtualMachines/runCommands', variables('clientVM'), 'addToDomain')]"
+      ],
+      "properties": {
+        "protectedParameters": [
+          {
+            "name": "member",
+            "value": "[parameters('domainAccountUsername')]"
+          },
+          {
+            "name": "pw",
+            "value": "[parameters('domainAccountPassword')]"
+          }
+        ],
+        "source": {
+          "script": "[concat('param([string] [Parameter(Mandatory=$true)] $member, [string] [Parameter(Mandatory=$true)] $pw); $debugpreference=''continue''; $securePass = ConvertTo-SecureString $pw -AsPlainText -Force; New-ADUser -Name $member -Enabled $true -AccountPassword $securePass; Add-ADGroupMember -Identity \"Administrators\" -Members $member; Add-ADGroupMember -Identity \"Remote Desktop Users\" -Members $member; Add-ADGroupMember -Identity \"Domain Admins\" -Members $member;')]"
+        },
+        "timeoutInSeconds": 30000
+      },
+      "tags": "[variables('resourceTagsLabbox')]"
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id)]",
+      "properties": {
+        "roleDefinitionId": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Authorization/roleDefinitions/', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]",
+        "principalType": "ServicePrincipal",
+        "principalId": "6a1917cc-984f-4c11-a96e-efdb73fe5816"
+      }
+    },
+    {
+      "type": "Microsoft.Resources/tags",
+      "name": "default",
+      "apiVersion": "2021-04-01",
+      "properties": {
+        "tags": "[variables('resourceTagsLabbox')]"
+      }
+    }
+  ],
+  "outputs": {}
+}
